@@ -1,0 +1,184 @@
+#include <Arduino.h>
+#include <BleKeyboard.h>
+#include <Adafruit_NeoPixel.h>
+
+// --- Configuração dos Pinos (ESP32 WROOM / DevKit Tradicional) ---
+#define PIN_BTN_1     23  // Botão 1 (Ação Esquerda / Voltar / Subir)
+#define PIN_BTN_2     22  // Botão 2 (Ação Direita / Avançar / Descer)
+#define PIN_BTN_MODE  21  // Botão 3 (Mudança de Modo)
+
+#define PIN_WS2812    18  // Pino de dados dos LEDs WS2812
+#define NUM_LEDS      6   // Total de 6 LEDs
+
+// Instância do Teclado Bluetooth (Visível no Android)
+BleKeyboard bleKeyboard("Pedal Kaizen 4Modos", "Kaizen", 100);
+
+// Instância dos LEDs WS2812
+Adafruit_NeoPixel strip(NUM_LEDS, PIN_WS2812, NEO_GRB + NEO_KHZ800);
+
+// Definição dos 4 Modos do Pedal
+enum PedalMode {
+  MODE_LEFT_RIGHT = 0,   // Modo 0: Seta Esquerda / Seta Direita (LED 1 - Azul)
+  MODE_UP_DOWN = 1,      // Modo 1: Seta Cima / Seta Baixo (LED 2 - Vermelho)
+  MODE_PAGE_UP_DOWN = 2, // Modo 2: Page Up / Page Down (LED 3 - Verde)
+  MODE_MEDIA_VOL = 3     // Modo 3: Volume Down / Volume Up (LED 4 - Amarelo)
+};
+
+PedalMode currentMode = MODE_LEFT_RIGHT;
+
+// Controle de animação do Bluetooth
+unsigned long lastAnimTime = 0;
+int animStep = 0;
+
+void updateLEDs();
+void executeAction(uint8_t buttonId);
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  // Inicializa os botões com Pull-Up interno
+  pinMode(PIN_BTN_1, INPUT_PULLUP);
+  pinMode(PIN_BTN_2, INPUT_PULLUP);
+  pinMode(PIN_BTN_MODE, INPUT_PULLUP);
+
+  // Inicializa a fita de LEDs
+  strip.begin();
+  strip.setBrightness(40); // Brilho moderado
+  strip.clear();
+  strip.show();
+
+  // Inicia o Bluetooth HID
+  bleKeyboard.begin();
+
+  Serial.println("Pedal ESP32 Tradicional Inicializado com Sucesso!");
+}
+
+void loop() {
+  // === SE CONECTADO AO ANDROID ===
+  if (bleKeyboard.isConnected()) {
+    
+    // --- 1. MUDANÇA DE MODO ---
+    if (digitalRead(PIN_BTN_MODE) == LOW) {
+      delay(20); // Debounce curto
+      if (digitalRead(PIN_BTN_MODE) == LOW) {
+        currentMode = (PedalMode)((currentMode + 1) % 4);
+        
+        Serial.print("Modo alterado para: ");
+        Serial.println(currentMode);
+
+        // Feedback visual rápido de troca
+        updateLEDs();
+        delay(150);
+
+        while (digitalRead(PIN_BTN_MODE) == LOW) {
+          delay(10);
+        }
+      }
+    }
+
+    // --- 2. BOTÃO 1 ---
+    if (digitalRead(PIN_BTN_1) == LOW) {
+      delay(20);
+      if (digitalRead(PIN_BTN_1) == LOW) {
+        executeAction(1); 
+        while (digitalRead(PIN_BTN_1) == LOW) { delay(10); }
+      }
+    }
+
+    // --- 3. BOTÃO 2 ---
+    if (digitalRead(PIN_BTN_2) == LOW) {
+      delay(20);
+      if (digitalRead(PIN_BTN_2) == LOW) {
+        executeAction(2); 
+        while (digitalRead(PIN_BTN_2) == LOW) { delay(10); }
+      }
+    }
+
+    // Atualiza os LEDs de acordo com o modo ativo
+    updateLEDs();
+
+  } else {
+    // === DESCONECTADO: LED 0 LIGADO E OS OUTROS PISCANDO AZUL (BLUETOOTH) ===
+    if (millis() - lastAnimTime > 300) {
+      lastAnimTime = millis();
+      
+      strip.clear();
+      // LED 0: Fixo em branco fraco indicando Power (Ligado)
+      strip.setPixelColor(0, strip.Color(20, 20, 20)); 
+      
+      // LEDs 1 ao 5: Piscando em azul (Aguardando Pareamento)
+      uint32_t btColor = (animStep % 2 == 0) ? strip.Color(0, 0, 150) : strip.Color(0, 0, 0);
+      for (int i = 1; i < NUM_LEDS; i++) {
+        strip.setPixelColor(i, btColor);
+      }
+      strip.show();
+      animStep++;
+    }
+  }
+}
+
+void executeAction(uint8_t buttonId) {
+  if (!bleKeyboard.isConnected()) return;
+
+  switch (currentMode) {
+    case MODE_LEFT_RIGHT:
+      // Modo 0: Seta Esquerda / Seta Direita
+      if (buttonId == 1) bleKeyboard.write(KEY_LEFT_ARROW);
+      else bleKeyboard.write(KEY_RIGHT_ARROW);
+      break;
+
+    case MODE_UP_DOWN:
+      // Modo 1: Seta Cima / Seta Baixo
+      if (buttonId == 1) bleKeyboard.write(KEY_UP_ARROW);
+      else bleKeyboard.write(KEY_DOWN_ARROW);
+      break;
+
+    case MODE_PAGE_UP_DOWN:
+      // Modo 2: Page Up / Page Down
+      if (buttonId == 1) bleKeyboard.write(KEY_PAGE_UP);
+      else bleKeyboard.write(KEY_PAGE_DOWN);
+      break;
+
+    case MODE_MEDIA_VOL:
+      // Modo 3: Volume Down / Volume Up
+      if (buttonId == 1) bleKeyboard.write(KEY_MEDIA_VOLUME_DOWN);
+      else bleKeyboard.write(KEY_MEDIA_VOLUME_UP);
+      break;
+  }
+
+  // Pisca verde rapidamente nos LEDs para confirmar o disparo do comando
+  strip.clear();
+  strip.setPixelColor(0, strip.Color(20, 20, 20)); // Mantém power aceso
+  for (int i = 1; i < NUM_LEDS; i++) {
+    strip.setPixelColor(i, strip.Color(0, 150, 0));
+  }
+  strip.show();
+  delay(80); 
+  updateLEDs();
+}
+
+void updateLEDs() {
+  strip.clear();
+
+  // LED 0: Sempre fixo em branco fraco indicando "Power / Ligado"
+  strip.setPixelColor(0, strip.Color(20, 20, 20)); 
+
+  // LEDs 1 a 4: Apenas um LED aceso por vez indicando o modo ativo
+  switch (currentMode) {
+    case MODE_LEFT_RIGHT:
+      strip.setPixelColor(1, strip.Color(0, 0, 150));     // LED 1 = AZUL (Esquerda / Direita)
+      break;
+    case MODE_UP_DOWN:
+      strip.setPixelColor(2, strip.Color(150, 0, 0));     // LED 2 = VERMELHO (Cima / Baixo)
+      break;
+    case MODE_PAGE_UP_DOWN:
+      strip.setPixelColor(3, strip.Color(0, 150, 0));     // LED 3 = VERDE (Page Up / Down)
+      break;
+    case MODE_MEDIA_VOL:
+      strip.setPixelColor(4, strip.Color(150, 150, 0));   // LED 4 = AMARELO (Volume Mídia)
+      break;
+  }
+
+  strip.show();
+}
